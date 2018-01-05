@@ -45,11 +45,14 @@ class IEDUtil(NSObject):
         return cls.splitVersion(version)
     
     @classmethod
+    def hostMajorVersion(cls):
+        return cls.hostVersionTuple()[1]
+    
+    @classmethod
     def hostOSName(cls):
-        osMajor = cls.hostVersionTuple()[1]
-        if osMajor <= 7:
+        if IEDUtil.hostMajorVersion() <= 7:
             return "Mac OS X"
-        elif osMajor >= 12:
+        elif IEDUtil.hostMajorVersion() >= 12:
             return "macOS"
         else:
             return "OS X"
@@ -115,6 +118,9 @@ class IEDUtil(NSObject):
         if os.path.exists(os.path.join(path,
                           "Contents/SharedSupport/InstallESD.dmg")):
             return True
+        elif os.path.exists(os.path.join(path,
+                            "Contents/Resources/InstallAssistantTool")):
+            return True
         elif path.lower().endswith(".dmg"):
             return True
         else:
@@ -164,14 +170,20 @@ class IEDUtil(NSObject):
                 return cls.calculateInstalledPkgSize_(pkgPath)
             else:
                 return size
-        elif ext == ".plist":
-            # FIXME: Implement size calculation
-            LogWarning("Using hardcoded size for InstallInfo.plist")
-            return 12497424
-        else:
-            LogError("Don't know how to calculate installed size for '%@'",
-                     pkgPath)
-            return None
+        elif os.path.basename(pkgPath) == "InstallInfo.plist":
+            iedPath = os.path.join(os.path.dirname(pkgPath), "InstallESD.dmg")
+            try:
+                iedSize = os.stat(iedPath).st_size
+                estimatedSize = int(iedSize * 2.72127696157)
+                LogDebug("Estimating size requirements of InstallInfo.plist to %@",
+                          cls.formatByteSize_(estimatedSize))
+                return estimatedSize
+            except OSError:
+                pass
+        
+        LogError("Don't know how to calculate installed size for '%@'",
+                 pkgPath)
+        return None
     
     @classmethod
     def getInstalledPkgSizeFromInstaller_(cls, pkgPath):

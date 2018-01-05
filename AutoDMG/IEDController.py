@@ -44,6 +44,9 @@ class IEDController(NSObject):
     volumeName = IBOutlet()
     volumeSize = IBOutlet()
     finalizeAsrImagescan = IBOutlet()
+    filesystem = IBOutlet()
+    filesystemApfs = IBOutlet()
+    filesystemHfs = IBOutlet()
     
     def awakeFromNib(self):
         LogDebug("awakeFromNib")
@@ -74,6 +77,17 @@ class IEDController(NSObject):
         
         # Currently loaded template.
         self.templateURL = None
+        
+        # Filesystem selection.
+        self.filesystem.setAutoenablesItems_(False)
+        self.filesystemHfs.setRepresentedObject_("hfs")
+        self.filesystemApfs.setRepresentedObject_("apfs")
+        if IEDUtil.hostMajorVersion() < 13:
+            self.filesystem.selectItem_(self.filesystemHfs)
+            self.filesystemApfs.setEnabled_(False)
+        else:
+            self.filesystem.selectItem_(self.filesystemApfs)
+            self.filesystemApfs.setEnabled_(True)
     
     # Methods to communicate with app delegate.
     
@@ -94,8 +108,7 @@ class IEDController(NSObject):
     
     def setSourcePlaceholder(self):
         self.sourceLabel.setStringValue_("Drop %s Installer Here" % (IEDUtil.hostOSName()))
-        osMajor = IEDUtil.hostVersionTuple()[1]
-        image = NSImage.imageNamed_("Installer Placeholder 10.%d" % osMajor)
+        image = NSImage.imageNamed_("Installer Placeholder 10.%d" % IEDUtil.hostMajorVersion())
         if not image:
             image = NSImage.imageNamed_("Installer Placeholder")
         self.sourceImage.animator().setImage_(image)
@@ -269,15 +282,10 @@ class IEDController(NSObject):
         if self.addPkgController.packagesToInstall():
             dateStr = formatter.stringFromDate_(NSDate.date())
             imageName = "osx_custom_%s" % dateStr
-        osMajor = IEDUtil.hostVersionTuple()[1]
-        if osMajor < 13:
-            fsType = "hfs"
-        else:
-            fsType = "apfs"
         panel.setNameFieldStringValue_("%s-%s-%s.%s" % (imageName,
             self.installerVersion,
             self.installerBuild,
-            fsType))
+            self.filesystem.selectedItem().representedObject()))
         result = panel.runModal()
         if result != NSFileHandlingPanelOKButton:
             return
@@ -313,6 +321,10 @@ class IEDController(NSObject):
         finalize_asr_imagescan = bool(self.finalizeAsrImagescan.state())
         template.setFinalizeAsrImagescan_(finalize_asr_imagescan)
         self.workflow.setFinalizeAsrImagescan_(finalize_asr_imagescan)
+        
+        fsType = self.filesystem.selectedItem().representedObject()
+        template.setFilesystem_(fsType)
+        self.workflow.setFilesystem_(fsType)
 
         self.workflow.setTemplate_(template)
         
@@ -425,6 +437,8 @@ class IEDController(NSObject):
             template.setVolumeSize_(self.volumeSize.intValue())
         if self.finalizeAsrImagescan.state() == NSOffState:
             template.setFinalizeAsrImagescan_(False)
+        if IEDUtil.hostMajorVersion() >= 13:
+            template.setFilesystem_(self.filesystem.selectedItem().representedObject())
         template.setAdditionalPackages_([x.path() for x in self.addPkgController.packagesToInstall()])
         
         error = template.saveTemplateAndReturnError_(url.path())
@@ -481,6 +495,22 @@ class IEDController(NSObject):
         if template.finalizeAsrImagescan == False:
             LogDebug("Setting 'Finalize: Scan for restore' to %@", template.finalizeAsrImagescan)
             self.finalizeAsrImagescan.setState_(NSOffState)
+        # Filesystem.
+        if template.filesystem:
+            if IEDUtil.hostMajorVersion() < 13:
+                if template.filesystem != "hfs":
+                    LogWarning("Ignoring template filesystem (%@), using hfs on 10.%d",
+                               template.filesystem,
+                               IEDUtil.hostMajorVersion())
+            else:
+                LogDebug("Setting filesystem to %@", template.filesystem)
+                for item in self.filesystem.itemArray():
+                    if item.representedObject() == template.filesystem:
+                        self.filesystem.selectItem_(item)
+                        break
+                else:
+                    LogWarning("Unknown filesystem '%@'", template.filesystem)
+        
         # SourcePath.
         if template.sourcePath:
             LogDebug("Setting source to %@", template.sourcePath)

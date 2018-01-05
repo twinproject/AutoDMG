@@ -62,6 +62,7 @@ class IEDWorkflow(NSObject):
         self._volumeSize = None
         self._template = None
         self._finalizeAsrImagescan = True
+        self._filesystem = None
         self.tempDir = None
         self.templatePath = None
         self.sourceType = None
@@ -154,12 +155,20 @@ class IEDWorkflow(NSObject):
             self.newSourcePath,
         ]
         for path in pathCandidates:
-            if os.path.exists(path):
+            if os.path.isfile(path):
                 dmgPath = path
                 break
         else:
-            self.delegate.sourceFailed_text_("Failed to mount %s" % self.newSourcePath,
-                                             "No system dmg found")
+            iaToolPath = os.path.join(self.newSourcePath, "Contents/Resources/InstallAssistantTool")
+            baseName = os.path.basename(self.newSourcePath)
+            if os.path.exists(iaToolPath):
+                self.delegate.sourceFailed_text_("Incomplete installer",
+                                                 "Installation resources are missing from '%s'. " % baseName +
+                                                 "Try downloading a new installer from the App Store straight from " +
+                                                 "Apple without using an internal Software Update or caching server.")
+            else:
+                self.delegate.sourceFailed_text_("Failed to mount %s" % self.newSourcePath,
+                                                 "No system dmg found")
             return
         
         self.delegate.examiningSource_(self.newSourcePath)
@@ -209,6 +218,11 @@ class IEDWorkflow(NSObject):
             self.baseSystemMountedFromPath = baseSystemPath
             self.dmgHelper.attach_selector_(baseSystemPath, self.handleSourceMountResult_)
         else:
+            if (self.sourceType == IEDWorkflow.INSTALL_ESD) and \
+               (IEDUtil.hostMajorVersion() >= 13):
+                self.delegate.sourceFailed_text_("Invalid source",
+                                                 "InstallESD images aren't valid installers on 10.13+.")
+                return
             self.delegate.sourceFailed_text_("Invalid source",
                                              "Couldn't find system version.")
     
@@ -318,6 +332,23 @@ class IEDWorkflow(NSObject):
     
     def setFinalizeAsrImagescan_(self, finalizeAsrImagescan):
         self._finalizeAsrImagescan = finalizeAsrImagescan
+    
+    # Filesystem for 10.13+ images.
+    
+    def filesystem(self):
+        if IEDUtil.hostMajorVersion() < 13:
+            LogDebug("Workflow filesystem is always hfs for this OS version")
+            return "hfs"
+        elif self._filesystem:
+            LogDebug("Workflow filesystem is set to '%@'", self._filesystem)
+            return self._filesystem
+        else:
+            LogDebug("Workflow filesystem defaults to apfs for this OS version")
+            return "apfs"
+    
+    def setFilesystem_(self, filesystem):
+        LogDebug("Setting filesystem for workflow to '%@'", filesystem)
+        self._filesystem = filesystem
     
     # Template to save in image.
     
@@ -595,13 +626,17 @@ class IEDWorkflow(NSObject):
         sizeRequirement = 0
         LogInfo("%d packages to install:", len(self.packagesToInstall))
         for path in self.packagesToInstall:
-            LogInfo("    %@", path)
-            installedSize = IEDUtil.getInstalledPkgSize_(path)
+            try:
+                installedSize = IEDUtil.getInstalledPkgSize_(path)
+            except BaseException as e:
+                LogError("Size calculation of %@ failed: %@", path, unicode(e))
+                installedSize = None
             if installedSize is None:
                 self.delegate.buildFailed_details_("Failed to determine installed size",
                                                    "Unable to determine installation size requirements for %s" % path)
                 self.stop()
                 return
+            LogInfo("    %@ requires %@", path, IEDUtil.formatByteSize_(installedSize))
             sizeRequirement += installedSize
         sizeReqStr = IEDUtil.formatByteSize_(sizeRequirement)
         LogInfo("Workflow requires a %@ disk image", sizeReqStr)
@@ -636,11 +671,6 @@ class IEDWorkflow(NSObject):
         
         # The script is wrapped with progresswatcher.py which parses script
         # output and sends it back as notifications to IEDSocketListener.
-        osMajor = IEDUtil.hostVersionTuple()[1]
-        if osMajor < 13:
-            fsType = "HFS+J"
-        else:
-            fsType = "APFS"
         args = [
             NSBundle.mainBundle().pathForResource_ofType_("progresswatcher", "py"),
             "--cd", NSBundle.mainBundle().resourcePath(),
@@ -648,7 +678,7 @@ class IEDWorkflow(NSObject):
             "installesdtodmg",
             "--user", str(os.getuid()),
             "--group", str(os.getgid()),
-            "--fstype", fsType,
+            "--fstype", self.filesystem(),
             "--output", self.outputPath(),
             "--volume-name", self.volumeName(),
             "--size", str(self.volumeSize()),
